@@ -146,8 +146,8 @@ fn draw_nought(x: usize, y: usize) {
 
 fn minmax(board: &mut Grid, depth: i32, maxing: bool) -> i32 {
     match board.is_win() {
-        Mark::CROSS => return depth - SIZE as i32,
-        Mark::NOUGHT => return SIZE as i32 - depth,
+        Mark::CROSS => return -100 + depth as i32,
+        Mark::NOUGHT => return 100 - depth as i32,
         Mark::EMPTY => {
             if board.is_full() {
                 return 0;
@@ -184,7 +184,7 @@ fn generate_tablebase() {
 
     let mut grid_set: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    while let Some(ng) = next_grids.pop() {
+    while let Some(mut ng) = next_grids.pop() {
         if ng.is_win() != Mark::EMPTY {
             continue;
         }
@@ -192,21 +192,19 @@ fn generate_tablebase() {
             let mut tmp_grids: Vec<Grid> = Vec::new();
             let mut tmp_pos: Vec<(usize, usize)> = Vec::new();
 
-            let mut board_player = ng.clone();
-            board_player.change(y, x, Mark::CROSS);
+            ng.change(y, x, Mark::CROSS);
 
-            let ns: &String = &board_player.flatten_grid();
-            if grid_set.contains(ns) {
+            let ns: String = ng.flatten_grid();
+            if grid_set.contains(&ns) {
                 continue;
             }
             grid_set.insert(ns.to_string());
 
             // find best move for AI after player played cross.
             let mut max_score = i32::MIN;
-            for (ty, tx) in board_player.possible_moves() {
-                let mut board_ai = board_player.clone();
-                board_ai.change(ty, tx, Mark::NOUGHT);
-                let score = minmax(&mut board_player, 1, true);
+            for (ty, tx) in ng.possible_moves() {
+                ng.change(ty, tx, Mark::NOUGHT);
+                let score = minmax(&mut ng, 1, true);
                 if score >= max_score {
                     if score > max_score {
                         max_score = score;
@@ -214,19 +212,18 @@ fn generate_tablebase() {
                         tmp_pos.clear();
                     }
                     tmp_pos.push((ty, tx));
-                    tmp_grids.push(board_ai);
+                    tmp_grids.push(ng.clone());
                 }
+                ng.change(ty, tx, Mark::EMPTY);
             }
-            let mut s: String = String::new();
-            for (y, x) in tmp_pos {
-                s.push_str(&y.to_string());
-                s.push_str(&x.to_string());
-                s.push(':');
-            }
-            s.pop();
+            let s: String = tmp_pos
+                .iter()
+                .map(|(y, x)| format!("{}{}", y, x))
+                .collect::<Vec<String>>()
+                .join(":");
 
             let csv: CSVGrid = CSVGrid {
-                now: board_player.flatten_grid(),
+                now: ng.flatten_grid(),
                 next_moves: s,
             };
 
@@ -236,6 +233,7 @@ fn generate_tablebase() {
                     eprintln!("Error when writing csv: {}", e);
                 }
             }
+            ng.change(y, x, Mark::EMPTY);
             next_grids.extend(tmp_grids);
         }
     }
@@ -288,27 +286,28 @@ async fn main() {
                 70.0..255.0 => 0,
                 265.0..455.0 => 1,
                 465.0..650.0 => 2,
-                _ => SIZE,
+                _ => continue,
             };
             let y: usize = match pos.1 {
                 70.0..255.0 => 0,
                 265.0..455.0 => 1,
                 465.0..650.0 => 2,
-                _ => SIZE,
+                _ => continue,
             };
             if x != SIZE && y != SIZE && board.grid[y][x] == Mark::EMPTY {
                 board.change(y, x, Mark::CROSS);
                 if board.is_win() == Mark::CROSS {
                     println!("Player won!");
-                    return;
-                } else if (board.is_full()) {
+                    board.reset_grid();
+                } else if board.is_full() {
                     println!("Ended in tie!");
-                    return;
-                }
-                ai_turn(&mut board);
-                if board.is_win() == Mark::NOUGHT {
-                    println!("AI won!");
-                    return;
+                    board.reset_grid();
+                } else {
+                    ai_turn(&mut board);
+                    if board.is_win() == Mark::NOUGHT {
+                        println!("AI won!");
+                        board.reset_grid();
+                    }
                 }
             }
         }
