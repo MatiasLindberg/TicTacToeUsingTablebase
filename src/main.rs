@@ -97,34 +97,27 @@ struct CSVGrid {
 }
 
 impl CSVGrid {
-    fn unflatten(&self) -> Vec<Vec<Mark>> {
-        let mut board: Vec<Vec<Mark>> = vec![vec![Mark::EMPTY; SIZE]; SIZE];
-        let mut s = self.next_moves.chars();
-        for y in 0..SIZE {
-            for x in 0..SIZE {
-                match s.next() {
-                    Some('E') => board[y][x] = Mark::EMPTY,
-                    Some('C') => board[y][x] = Mark::CROSS,
-                    Some('N') => board[y][x] = Mark::NOUGHT,
-                    _ => {
-                        println!("Error");
-                        return vec![vec![]];
-                    }
-                }
-            }
-        }
-        board
-    }
-
     fn write_csv(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut wtr = csv::Writer::from_path("Tablebase.csv")?;
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open("Tablebase.csv")?;
+
+        let mut wtr = csv::Writer::from_writer(file);
         wtr.serialize(self)?;
         wtr.flush()?;
         Ok(())
     }
 
-    fn best_moves(&self) -> Vec<(usize, usize)> {
-        vec![]
+    fn find_moves(&self) -> Vec<(usize, usize)> {
+        let mut pos: Vec<(usize, usize)> = Vec::new();
+        for part in self.next_moves.split(':') {
+            let p: Vec<char> = part.chars().collect();
+            if let (Some(y), Some(x)) = (p[0].to_digit(10), p[1].to_digit(10)) {
+                pos.push((y as usize, x as usize));
+            }
+        }
+        pos
     }
 }
 fn draw_background() {
@@ -149,14 +142,6 @@ fn draw_nought(x: usize, y: usize) {
     let xf: f32 = 160.0 + (x * 200) as f32;
     let yf: f32 = 160.0 + (y * 200) as f32;
     draw_circle_lines(xf, yf, 50.0, 20.0, DARKGREEN);
-}
-
-fn read_csv() -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
-    let file = std::fs::File::open("Tablebase.csv")?;
-    let mut rdr = csv::Reader::from_reader(std::io::BufReader::new(file));
-    let mut records = Vec::new();
-
-    Ok(records)
 }
 
 fn minmax(board: &mut Grid, depth: i32, maxing: bool) -> i32 {
@@ -197,33 +182,87 @@ fn generate_tablebase() {
         grid: vec![vec![Mark::EMPTY; SIZE]; SIZE],
     });
 
+    let mut grid_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     while let Some(ng) = next_grids.pop() {
         if ng.is_win() != Mark::EMPTY {
             continue;
         }
-        let mut tmp_grids: Vec<Grid> = Vec::new();
         for (y, x) in ng.possible_moves() {
+            let mut tmp_grids: Vec<Grid> = Vec::new();
+            let mut tmp_pos: Vec<(usize, usize)> = Vec::new();
+
             let mut board_player = ng.clone();
             board_player.change(y, x, Mark::CROSS);
 
+            let ns: &String = &board_player.flatten_grid();
+            if grid_set.contains(ns) {
+                continue;
+            }
+            grid_set.insert(ns.to_string());
+
             // find best move for AI after player played cross.
             let mut max_score = i32::MIN;
-            tmp_grids.clear();
             for (ty, tx) in board_player.possible_moves() {
                 let mut board_ai = board_player.clone();
                 board_ai.change(ty, tx, Mark::NOUGHT);
-                let score = minmax(&mut board_ai, 1, true);
+                let score = minmax(&mut board_player, 1, true);
                 if score >= max_score {
                     if score > max_score {
                         max_score = score;
                         tmp_grids.clear();
+                        tmp_pos.clear();
                     }
-                    println!("{:?}", board_ai.grid);
+                    tmp_pos.push((ty, tx));
                     tmp_grids.push(board_ai);
                 }
             }
+            let mut s: String = String::new();
+            for (y, x) in tmp_pos {
+                s.push_str(&y.to_string());
+                s.push_str(&x.to_string());
+                s.push(':');
+            }
+            s.pop();
+
+            let csv: CSVGrid = CSVGrid {
+                now: board_player.flatten_grid(),
+                next_moves: s,
+            };
+
+            match csv.write_csv() {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Error when writing csv: {}", e);
+                }
+            }
+            next_grids.extend(tmp_grids);
         }
-        next_grids.extend(tmp_grids.clone());
+    }
+}
+
+fn find_next(board: &Grid) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
+    let file = std::fs::File::open("Tablebase.csv")?;
+    let mut rdr = csv::Reader::from_reader(std::io::BufReader::new(file));
+    let find_s = board.flatten_grid();
+
+    for res in rdr.deserialize() {
+        let csv_grid: CSVGrid = res?;
+        if csv_grid.now == find_s {
+            return Ok(csv_grid.find_moves());
+        }
+    }
+    Ok(vec![])
+}
+
+fn ai_turn(board: &mut Grid) {
+    match find_next(&board) {
+        Ok(pos) => {
+            board.change(pos[0].0, pos[0].1, Mark::NOUGHT);
+        }
+        Err(e) => {
+            println!("Error finding next position. {}", e)
+        }
     }
 }
 
@@ -237,8 +276,6 @@ async fn main() {
 
     if !std::path::Path::new("Tablebase.csv").exists() {
         generate_tablebase();
-    } else {
-        //read_csv();
     }
 
     loop {
@@ -259,8 +296,20 @@ async fn main() {
                 465.0..650.0 => 2,
                 _ => SIZE,
             };
-            if x != SIZE && y != SIZE {
+            if x != SIZE && y != SIZE && board.grid[y][x] == Mark::EMPTY {
                 board.change(y, x, Mark::CROSS);
+                if board.is_win() == Mark::CROSS {
+                    println!("Player won!");
+                    return;
+                } else if (board.is_full()) {
+                    println!("Ended in tie!");
+                    return;
+                }
+                ai_turn(&mut board);
+                if board.is_win() == Mark::NOUGHT {
+                    println!("AI won!");
+                    return;
+                }
             }
         }
 
