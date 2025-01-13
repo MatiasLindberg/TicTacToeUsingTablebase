@@ -15,8 +15,52 @@ struct Grid {
 }
 
 impl Grid {
+    fn reset_grid(&mut self) {
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                self.grid[y][x] = Mark::EMPTY;
+            }
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                if self.grid[y][x] == Mark::EMPTY {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn is_win(&self) -> Mark {
+        if self.grid[1][1] != Mark::EMPTY
+            && ((self.grid[1][1] == self.grid[0][1] && self.grid[1][1] == self.grid[2][1])
+                || (self.grid[1][1] == self.grid[1][0] && self.grid[1][1] == self.grid[1][2])
+                || (self.grid[1][1] == self.grid[0][0] && self.grid[1][1] == self.grid[2][2])
+                || (self.grid[2][0] == self.grid[1][1] && self.grid[1][1] == self.grid[0][2]))
+        {
+            return self.grid[1][1].clone();
+        }
+        if self.grid[0][0] != Mark::EMPTY
+            && ((self.grid[0][0] == self.grid[1][0] && self.grid[0][0] == self.grid[2][0])
+                || (self.grid[0][0] == self.grid[0][1] && self.grid[0][0] == self.grid[0][2]))
+        {
+            return self.grid[0][0].clone();
+        }
+        if self.grid[2][2] != Mark::EMPTY
+            && ((self.grid[2][2] == self.grid[1][2] && self.grid[2][2] == self.grid[0][2])
+                || (self.grid[2][2] == self.grid[2][1] && self.grid[2][2] == self.grid[2][0]))
+        {
+            return self.grid[2][2].clone();
+        }
+        Mark::EMPTY
+    }
+
     fn flatten_grid(&self) -> String {
         let mut s: String = "".to_string();
+
         for y in 0..SIZE {
             for x in 0..SIZE {
                 match self.grid[y][x] {
@@ -40,7 +84,8 @@ impl Grid {
         }
         moves
     }
-    fn change(&mut self, x: usize, y: usize, change_to: Mark) {
+
+    fn change(&mut self, y: usize, x: usize, change_to: Mark) {
         self.grid[y][x] = change_to;
     }
 }
@@ -70,6 +115,23 @@ impl CSVGrid {
         }
         board
     }
+
+    fn write_csv(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut wtr = csv::Writer::from_path("Tablebase.csv")?;
+        wtr.serialize(self)?;
+        wtr.flush()?;
+        Ok(())
+    }
+
+    fn best_moves(&self) -> Vec<(usize, usize)> {
+        vec![]
+    }
+}
+fn draw_background() {
+    clear_background(BLACK);
+    draw_rectangle_lines(60.0, 60.0, 600.0, 600.0, 20.0, LIGHTGRAY);
+    draw_rectangle_lines(255.0, 60.0, 210.0, 600.0, 20.0, LIGHTGRAY);
+    draw_rectangle_lines(60.0, 255.0, 600.0, 210.0, 20.0, LIGHTGRAY);
 }
 
 fn draw_cross(x: usize, y: usize) {
@@ -89,13 +151,6 @@ fn draw_nought(x: usize, y: usize) {
     draw_circle_lines(xf, yf, 50.0, 20.0, DARKGREEN);
 }
 
-fn write_csv(next: CSVGrid) -> Result<(), Box<dyn std::error::Error>> {
-    let mut wtr = csv::Writer::from_path("Tablebase.csv")?;
-    wtr.serialize(next)?;
-    wtr.flush()?;
-    Ok(())
-}
-
 fn read_csv() -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
     let file = std::fs::File::open("Tablebase.csv")?;
     let mut rdr = csv::Reader::from_reader(std::io::BufReader::new(file));
@@ -104,40 +159,72 @@ fn read_csv() -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
     Ok(records)
 }
 
-fn generate_tablebase() {
-    let mut board: Grid = Grid {
-        grid: vec![vec![Mark::EMPTY; SIZE]; SIZE],
+fn minmax(board: &mut Grid, depth: i32, maxing: bool) -> i32 {
+    match board.is_win() {
+        Mark::CROSS => return depth - SIZE as i32,
+        Mark::NOUGHT => return SIZE as i32 - depth,
+        Mark::EMPTY => {
+            if board.is_full() {
+                return 0;
+            }
+        }
     };
 
-    for (x, y) in board.possible_moves() {
-        let mut board_cpy = board.clone();
-        board_cpy.grid[y][x] = Mark::CROSS;
+    if maxing {
+        let mut max_score: i32 = i32::MIN;
+        for (y, x) in board.possible_moves() {
+            board.change(y, x, Mark::NOUGHT);
+            let score = minmax(board, depth + 1, false);
+            board.change(y, x, Mark::EMPTY);
+            max_score = max_score.max(score);
+        }
+        max_score
+    } else {
+        let mut min_score: i32 = i32::MAX;
+        for (y, x) in board.possible_moves() {
+            board.change(y, x, Mark::CROSS);
+            let score: i32 = minmax(board, depth + 1, true);
+            board.change(y, x, Mark::EMPTY);
+            min_score = min_score.min(score);
+        }
+        min_score
     }
 }
 
-fn is_win(board: &Grid) -> Mark {
-    if board.grid[1][1] != Mark::EMPTY
-        && ((board.grid[1][1] == board.grid[0][1] && board.grid[1][1] == board.grid[2][1])
-            || (board.grid[1][1] == board.grid[1][0] && board.grid[1][1] == board.grid[1][2])
-            || (board.grid[0][0] == board.grid[1][1] && board.grid[0][0] == board.grid[2][2])
-            || (board.grid[0][0] == board.grid[1][1] && board.grid[1][1] == board.grid[2][2])
-            || (board.grid[2][0] == board.grid[1][1] && board.grid[1][1] == board.grid[0][2]))
-    {
-        return board.grid[1][1].clone();
+fn generate_tablebase() {
+    let mut next_grids: Vec<Grid> = Vec::new();
+    next_grids.push(Grid {
+        grid: vec![vec![Mark::EMPTY; SIZE]; SIZE],
+    });
+
+    while let Some(ng) = next_grids.pop() {
+        if ng.is_win() != Mark::EMPTY {
+            continue;
+        }
+        let mut tmp_grids: Vec<Grid> = Vec::new();
+        for (y, x) in ng.possible_moves() {
+            let mut board_player = ng.clone();
+            board_player.change(y, x, Mark::CROSS);
+
+            // find best move for AI after player played cross.
+            let mut max_score = i32::MIN;
+            tmp_grids.clear();
+            for (ty, tx) in board_player.possible_moves() {
+                let mut board_ai = board_player.clone();
+                board_ai.change(ty, tx, Mark::NOUGHT);
+                let score = minmax(&mut board_ai, 1, true);
+                if score >= max_score {
+                    if score > max_score {
+                        max_score = score;
+                        tmp_grids.clear();
+                    }
+                    println!("{:?}", board_ai.grid);
+                    tmp_grids.push(board_ai);
+                }
+            }
+        }
+        next_grids.extend(tmp_grids.clone());
     }
-    if board.grid[0][0] != Mark::EMPTY
-        && ((board.grid[0][0] == board.grid[1][0] && board.grid[0][0] == board.grid[2][0])
-            || (board.grid[0][0] == board.grid[0][1] && board.grid[0][0] == board.grid[0][2]))
-    {
-        return board.grid[0][0].clone();
-    }
-    if board.grid[2][2] != Mark::EMPTY
-        && ((board.grid[2][2] == board.grid[1][2] && board.grid[2][2] == board.grid[0][2])
-            || (board.grid[2][2] == board.grid[2][1] && board.grid[2][2] == board.grid[2][0]))
-    {
-        return board.grid[2][2].clone();
-    }
-    Mark::EMPTY
 }
 
 #[macroquad::main("TicTacToe")]
@@ -173,14 +260,11 @@ async fn main() {
                 _ => SIZE,
             };
             if x != SIZE && y != SIZE {
-                board.change(x, y, Mark::CROSS);
+                board.change(y, x, Mark::CROSS);
             }
         }
 
-        clear_background(BLACK);
-        draw_rectangle_lines(60.0, 60.0, 600.0, 600.0, 20.0, LIGHTGRAY);
-        draw_rectangle_lines(255.0, 60.0, 210.0, 600.0, 20.0, LIGHTGRAY);
-        draw_rectangle_lines(60.0, 255.0, 600.0, 210.0, 20.0, LIGHTGRAY);
+        draw_background();
         for y in 0..SIZE {
             for x in 0..SIZE {
                 match board.grid[y][x] {
