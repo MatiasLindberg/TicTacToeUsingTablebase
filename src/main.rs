@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 const SIZE: usize = 3;
 
-#[derive(PartialEq, Clone, Serialize, Deserialize, Debug)]
+#[derive(PartialEq, Copy, Clone, Serialize, Deserialize, Debug)]
 enum Mark {
     EMPTY,
     CROSS,
@@ -35,31 +35,33 @@ impl Grid {
     }
 
     fn is_win(&self) -> Mark {
-        if self.grid[1][1] != Mark::EMPTY
-            && ((self.grid[1][1] == self.grid[0][1] && self.grid[1][1] == self.grid[2][1])
-                || (self.grid[1][1] == self.grid[1][0] && self.grid[1][1] == self.grid[1][2])
-                || (self.grid[1][1] == self.grid[0][0] && self.grid[1][1] == self.grid[2][2])
-                || (self.grid[2][0] == self.grid[1][1] && self.grid[1][1] == self.grid[0][2]))
-        {
-            return self.grid[1][1].clone();
+        for i in 0..SIZE {
+            if self.grid[i][0] != Mark::EMPTY
+                && self.grid[i].iter().all(|&mark| mark == self.grid[i][0])
+            {
+                return self.grid[i][0].clone();
+            }
+            if self.grid[0][i] != Mark::EMPTY
+                && (0..SIZE).all(|j| self.grid[j][i] == self.grid[0][i])
+            {
+                return self.grid[0][i].clone();
+            }
         }
-        if self.grid[0][0] != Mark::EMPTY
-            && ((self.grid[0][0] == self.grid[1][0] && self.grid[0][0] == self.grid[2][0])
-                || (self.grid[0][0] == self.grid[0][1] && self.grid[0][0] == self.grid[0][2]))
-        {
+
+        if self.grid[0][0] != Mark::EMPTY && (0..SIZE).all(|i| self.grid[i][i] == self.grid[0][0]) {
             return self.grid[0][0].clone();
         }
-        if self.grid[2][2] != Mark::EMPTY
-            && ((self.grid[2][2] == self.grid[1][2] && self.grid[2][2] == self.grid[0][2])
-                || (self.grid[2][2] == self.grid[2][1] && self.grid[2][2] == self.grid[2][0]))
+
+        if self.grid[0][SIZE - 1] != Mark::EMPTY
+            && (0..SIZE).all(|i| self.grid[i][SIZE - 1 - i] == self.grid[0][SIZE - 1])
         {
-            return self.grid[2][2].clone();
+            return self.grid[0][SIZE - 1].clone();
         }
+
         Mark::EMPTY
     }
-
     fn flatten_grid(&self) -> String {
-        let mut s: String = "".to_string();
+        let mut s: String = String::new();
 
         for y in 0..SIZE {
             for x in 0..SIZE {
@@ -146,8 +148,8 @@ fn draw_nought(x: usize, y: usize) {
 
 fn minmax(board: &mut Grid, depth: i32, maxing: bool) -> i32 {
     match board.is_win() {
-        Mark::CROSS => return -100 + depth as i32,
-        Mark::NOUGHT => return 100 - depth as i32,
+        Mark::CROSS => return -100 + depth,
+        Mark::NOUGHT => return 100 - depth,
         Mark::EMPTY => {
             if board.is_full() {
                 return 0;
@@ -184,46 +186,53 @@ fn generate_tablebase() {
 
     let mut grid_set: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    while let Some(mut ng) = next_grids.pop() {
+    while let Some(ng) = next_grids.pop() {
         if ng.is_win() != Mark::EMPTY {
             continue;
         }
         for (y, x) in ng.possible_moves() {
-            let mut tmp_grids: Vec<Grid> = Vec::new();
-            let mut tmp_pos: Vec<(usize, usize)> = Vec::new();
+            let mut ng_cpy = ng.clone();
+            ng_cpy.change(y, x, Mark::CROSS);
 
-            ng.change(y, x, Mark::CROSS);
-
-            let ns: String = ng.flatten_grid();
-            if grid_set.contains(&ns) {
+            let ns: String = ng_cpy.flatten_grid();
+            if grid_set.contains(&ns) || ng_cpy.is_win() == Mark::CROSS {
                 continue;
             }
-            grid_set.insert(ns.to_string());
+            grid_set.insert(ns.clone());
 
             // find best move for AI after player played cross.
             let mut max_score = i32::MIN;
-            for (ty, tx) in ng.possible_moves() {
-                ng.change(ty, tx, Mark::NOUGHT);
-                let score = minmax(&mut ng, 1, true);
-                if score >= max_score {
-                    if score > max_score {
-                        max_score = score;
-                        tmp_grids.clear();
-                        tmp_pos.clear();
-                    }
-                    tmp_pos.push((ty, tx));
-                    tmp_grids.push(ng.clone());
+            let mut best_grids: Vec<Grid> = Vec::new();
+            let mut best_pos: Vec<(usize, usize)> = Vec::new();
+
+            for (ty, tx) in ng_cpy.possible_moves() {
+                let mut ai_grid = ng_cpy.clone();
+                ai_grid.change(ty, tx, Mark::NOUGHT);
+                let score = minmax(&mut ai_grid, 1, false);
+                println!(
+                    "Score {}, Grid {:?}, Prev Grid {:?}, Max {}",
+                    score, ai_grid.grid, ng_cpy.grid, max_score
+                );
+                if score > max_score {
+                    max_score = score;
+                    best_grids = Vec::new();
+                    best_pos = Vec::new();
                 }
-                ng.change(ty, tx, Mark::EMPTY);
+                if score == max_score {
+                    best_pos.push((ty, tx));
+                    best_grids.push(ai_grid);
+                }
             }
-            let s: String = tmp_pos
+            let s: String = best_pos
                 .iter()
                 .map(|(y, x)| format!("{}{}", y, x))
                 .collect::<Vec<String>>()
                 .join(":");
 
+            let grid_s: String = ng_cpy.flatten_grid();
+
             let csv: CSVGrid = CSVGrid {
-                now: ng.flatten_grid(),
+                now: grid_s,
                 next_moves: s,
             };
 
@@ -233,8 +242,7 @@ fn generate_tablebase() {
                     eprintln!("Error when writing csv: {}", e);
                 }
             }
-            ng.change(y, x, Mark::EMPTY);
-            next_grids.extend(tmp_grids);
+            next_grids.extend(best_grids);
         }
     }
 }
