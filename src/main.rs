@@ -1,4 +1,5 @@
 use macroquad::prelude::*;
+use macroquad::rand::ChooseRandom;
 use serde::{Deserialize, Serialize};
 
 const SIZE: usize = 3;
@@ -35,31 +36,29 @@ impl Grid {
     }
 
     fn is_win(&self) -> Mark {
-        for i in 0..SIZE {
-            if self.grid[i][0] != Mark::EMPTY
-                && self.grid[i].iter().all(|&mark| mark == self.grid[i][0])
-            {
-                return self.grid[i][0].clone();
-            }
-            if self.grid[0][i] != Mark::EMPTY
-                && (0..SIZE).all(|j| self.grid[j][i] == self.grid[0][i])
-            {
-                return self.grid[0][i].clone();
-            }
+        if self.grid[1][1] != Mark::EMPTY
+            && ((self.grid[1][1] == self.grid[0][1] && self.grid[1][1] == self.grid[2][1])
+                || (self.grid[1][1] == self.grid[1][0] && self.grid[1][1] == self.grid[1][2])
+                || (self.grid[1][1] == self.grid[0][0] && self.grid[1][1] == self.grid[2][2])
+                || (self.grid[2][0] == self.grid[1][1] && self.grid[1][1] == self.grid[0][2]))
+        {
+            return self.grid[1][1].clone();
         }
-
-        if self.grid[0][0] != Mark::EMPTY && (0..SIZE).all(|i| self.grid[i][i] == self.grid[0][0]) {
+        if self.grid[0][0] != Mark::EMPTY
+            && ((self.grid[0][0] == self.grid[1][0] && self.grid[0][0] == self.grid[2][0])
+                || (self.grid[0][0] == self.grid[0][1] && self.grid[0][0] == self.grid[0][2]))
+        {
             return self.grid[0][0].clone();
         }
-
-        if self.grid[0][SIZE - 1] != Mark::EMPTY
-            && (0..SIZE).all(|i| self.grid[i][SIZE - 1 - i] == self.grid[0][SIZE - 1])
+        if self.grid[2][2] != Mark::EMPTY
+            && ((self.grid[2][2] == self.grid[1][2] && self.grid[2][2] == self.grid[0][2])
+                || (self.grid[2][2] == self.grid[2][1] && self.grid[2][2] == self.grid[2][0]))
         {
-            return self.grid[0][SIZE - 1].clone();
+            return self.grid[2][2].clone();
         }
-
         Mark::EMPTY
     }
+
     fn flatten_grid(&self) -> String {
         let mut s: String = String::new();
 
@@ -99,18 +98,6 @@ struct CSVGrid {
 }
 
 impl CSVGrid {
-    fn write_csv(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let file = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open("Tablebase.csv")?;
-
-        let mut wtr = csv::Writer::from_writer(file);
-        wtr.serialize(self)?;
-        wtr.flush()?;
-        Ok(())
-    }
-
     fn find_moves(&self) -> Vec<(usize, usize)> {
         let mut pos: Vec<(usize, usize)> = Vec::new();
         for part in self.next_moves.split(':') {
@@ -122,6 +109,50 @@ impl CSVGrid {
         pos
     }
 }
+#[derive(Clone)]
+struct Tablebase {
+    tablebase: Vec<CSVGrid>,
+}
+impl Tablebase {
+    fn load_tablebase() -> Result<Self, Box<dyn std::error::Error>> {
+        let file = std::fs::File::open("Tablebase.csv")?;
+        let mut rdr = csv::Reader::from_reader(std::io::BufReader::new(file));
+        let tablebase: Vec<CSVGrid> = rdr.deserialize().collect::<Result<_, _>>()?;
+        Ok(Self { tablebase })
+    }
+
+    fn write_tablebase(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open("Tablebase.csv")?;
+
+        let mut wtr = csv::Writer::from_writer(file);
+
+        for csv in &self.tablebase {
+            wtr.serialize(csv)?;
+        }
+        wtr.flush()?;
+        Ok(())
+    }
+
+    fn find_next(&self, find_s: &String) -> (usize, usize) {
+        if let Some(nxt) = self
+            .tablebase
+            .iter()
+            .find(|csv_grid| csv_grid.now == *find_s)
+            .map(|csv_grid| csv_grid.find_moves())
+        {
+            match nxt.choose() {
+                Some((y, x)) => return (*y, *x),
+                None => println!("Could not choose one from vector."),
+            }
+        };
+
+        (0, 0)
+    }
+}
+
 fn draw_background() {
     clear_background(BLACK);
     draw_rectangle_lines(60.0, 60.0, 600.0, 600.0, 20.0, LIGHTGRAY);
@@ -144,6 +175,14 @@ fn draw_nought(x: usize, y: usize) {
     let xf: f32 = 160.0 + (x * 200) as f32;
     let yf: f32 = 160.0 + (y * 200) as f32;
     draw_circle_lines(xf, yf, 50.0, 20.0, DARKGREEN);
+}
+
+async fn draw_loading(tablebase_data: &std::sync::Arc<std::sync::Mutex<Option<Tablebase>>>) {
+    while !tablebase_data.lock().unwrap().is_some() {
+        clear_background(BLACK);
+        draw_text("Calculating tablebase!", 100.0, 300.0, 60.0, DARKGREEN);
+        next_frame().await;
+    }
 }
 
 fn minmax(board: &mut Grid, depth: i32, maxing: bool) -> i32 {
@@ -178,24 +217,22 @@ fn minmax(board: &mut Grid, depth: i32, maxing: bool) -> i32 {
     }
 }
 
-fn generate_tablebase() {
+fn generate_tablebase() -> Tablebase {
     let mut next_grids: Vec<Grid> = Vec::new();
     next_grids.push(Grid {
         grid: vec![vec![Mark::EMPTY; SIZE]; SIZE],
     });
 
+    let mut table: Vec<CSVGrid> = Vec::new();
     let mut grid_set: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     while let Some(ng) = next_grids.pop() {
-        if ng.is_win() != Mark::EMPTY {
-            continue;
-        }
         for (y, x) in ng.possible_moves() {
             let mut ng_cpy = ng.clone();
             ng_cpy.change(y, x, Mark::CROSS);
 
             let ns: String = ng_cpy.flatten_grid();
-            if grid_set.contains(&ns) || ng_cpy.is_win() == Mark::CROSS {
+            if grid_set.contains(&ns) || ng_cpy.is_win() != Mark::EMPTY {
                 continue;
             }
             grid_set.insert(ns.clone());
@@ -209,10 +246,6 @@ fn generate_tablebase() {
                 let mut ai_grid = ng_cpy.clone();
                 ai_grid.change(ty, tx, Mark::NOUGHT);
                 let score = minmax(&mut ai_grid, 1, false);
-                println!(
-                    "Score {}, Grid {:?}, Prev Grid {:?}, Max {}",
-                    score, ai_grid.grid, ng_cpy.grid, max_score
-                );
                 if score > max_score {
                     max_score = score;
                     best_grids = Vec::new();
@@ -236,40 +269,15 @@ fn generate_tablebase() {
                 next_moves: s,
             };
 
-            match csv.write_csv() {
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!("Error when writing csv: {}", e);
-                }
-            }
+            table.push(csv);
             next_grids.extend(best_grids);
         }
     }
-}
-
-fn find_next(board: &Grid) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
-    let file = std::fs::File::open("Tablebase.csv")?;
-    let mut rdr = csv::Reader::from_reader(std::io::BufReader::new(file));
-    let find_s = board.flatten_grid();
-
-    for res in rdr.deserialize() {
-        let csv_grid: CSVGrid = res?;
-        if csv_grid.now == find_s {
-            return Ok(csv_grid.find_moves());
-        }
+    let base: Tablebase = Tablebase { tablebase: table };
+    if let Err(e) = base.write_tablebase() {
+        println!("Error writing tablebase! {}", e)
     }
-    Ok(vec![])
-}
-
-fn ai_turn(board: &mut Grid) {
-    match find_next(&board) {
-        Ok(pos) => {
-            board.change(pos[0].0, pos[0].1, Mark::NOUGHT);
-        }
-        Err(e) => {
-            println!("Error finding next position. {}", e)
-        }
-    }
+    base
 }
 
 #[macroquad::main("TicTacToe")]
@@ -280,41 +288,78 @@ async fn main() {
         grid: vec![vec![Mark::EMPTY; SIZE]; SIZE],
     };
 
+    let tablebase: Tablebase;
+
     if !std::path::Path::new("Tablebase.csv").exists() {
-        generate_tablebase();
+        let tablebase_data = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let tb_data_clone = std::sync::Arc::clone(&tablebase_data);
+
+        std::thread::spawn(move || {
+            let tb = generate_tablebase();
+            let mut data = tb_data_clone.lock().unwrap();
+            *data = Some(tb);
+        });
+        draw_loading(&tablebase_data).await;
+
+        let data = tablebase_data.lock().unwrap();
+        if let Some(tb) = &*data {
+            tablebase = tb.clone();
+        } else {
+            eprintln!("Error getting generated tablebase!");
+            return;
+        }
+    } else {
+        tablebase = Tablebase::load_tablebase().expect("Failed to load tablebase.");
     }
+
+    let mut player_wins: usize = 0;
+    let mut ai_wins: usize = 0;
+    let mut ties: usize = 0;
+    let mut ended: bool = false;
 
     loop {
         if is_key_pressed(KeyCode::Escape) {
             println!("Exiting program!");
             return;
-        } else if is_mouse_button_pressed(MouseButton::Left) {
+        } else if ended && is_key_pressed(KeyCode::Backspace) {
+            board.reset_grid();
+            ended = false;
+        } else if is_key_pressed(KeyCode::Enter) {
+            println!(
+                "Player has won {} times. Ai has won {} time. {} games have been tied.",
+                player_wins, ai_wins, ties
+            );
+        } else if is_mouse_button_pressed(MouseButton::Left) && !ended {
             let pos: (f32, f32) = mouse_position();
             let x: usize = match pos.0 {
                 70.0..255.0 => 0,
                 265.0..455.0 => 1,
                 465.0..650.0 => 2,
-                _ => continue,
+                _ => SIZE,
             };
             let y: usize = match pos.1 {
                 70.0..255.0 => 0,
                 265.0..455.0 => 1,
                 465.0..650.0 => 2,
-                _ => continue,
+                _ => SIZE,
             };
             if x != SIZE && y != SIZE && board.grid[y][x] == Mark::EMPTY {
                 board.change(y, x, Mark::CROSS);
                 if board.is_win() == Mark::CROSS {
                     println!("Player won!");
-                    board.reset_grid();
+                    player_wins += 1;
+                    ended = true;
                 } else if board.is_full() {
                     println!("Ended in tie!");
-                    board.reset_grid();
+                    ties += 1;
+                    ended = true;
                 } else {
-                    ai_turn(&mut board);
+                    let (ny, nx) = tablebase.find_next(&board.flatten_grid());
+                    board.change(ny, nx, Mark::NOUGHT);
                     if board.is_win() == Mark::NOUGHT {
                         println!("AI won!");
-                        board.reset_grid();
+                        ai_wins += 1;
+                        ended = true;
                     }
                 }
             }
