@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 const SIZE: usize = 3;
 
-#[derive(PartialEq, Copy, Clone, Serialize, Deserialize, Debug)]
+#[derive(PartialEq, Copy, Clone, Serialize, Deserialize)]
 enum Mark {
     EMPTY,
     CROSS,
@@ -89,9 +89,35 @@ impl Grid {
     fn change(&mut self, y: usize, x: usize, change_to: Mark) {
         self.grid[y][x] = change_to;
     }
+
+    fn get_win_pos(&self, mark: Mark) -> Vec<(usize, usize)> {
+        if self.grid[1][1] == mark {
+            for y in 0..SIZE {
+                if self.grid[y][0] == mark && self.grid[SIZE - y - 1][2] == mark {
+                    return vec![(y, 0), (SIZE - y - 1, 2)];
+                }
+            }
+            if self.grid[0][1] == mark && self.grid[2][1] == mark {
+                return vec![(0, 1), (2, 1)];
+            }
+        } else if self.grid[0][0] == mark {
+            if self.grid[1][0] == mark && self.grid[2][0] == mark {
+                return vec![(0, 0), (2, 0)];
+            } else if self.grid[0][1] == mark && self.grid[0][2] == mark {
+                return vec![(0, 0), (0, 2)];
+            }
+        } else if self.grid[2][2] == mark {
+            if self.grid[2][0] == mark && self.grid[2][1] == mark {
+                return vec![(2, 0), (2, 2)];
+            } else if self.grid[0][2] == mark && self.grid[1][2] == mark {
+                return vec![(0, 2), (2, 2)];
+            }
+        }
+        vec![]
+    }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone)]
 struct CSVGrid {
     now: String,
     next_moves: String,
@@ -185,6 +211,28 @@ async fn draw_loading(tablebase_data: &std::sync::Arc<std::sync::Mutex<Option<Ta
     }
 }
 
+fn draw_win(pos: &Vec<(usize, usize)>, win: &Mark) {
+    if *win == Mark::CROSS {
+        draw_line(
+            (160 + pos[0].1 * 200) as f32,
+            (160 + pos[0].0 * 200) as f32,
+            (160 + pos[1].1 * 200) as f32,
+            (160 + pos[1].0 * 200) as f32,
+            10.0,
+            PINK,
+        );
+    } else {
+        draw_line(
+            (160 + pos[0].1 * 200) as f32,
+            (160 + pos[0].0 * 200) as f32,
+            (160 + pos[1].1 * 200) as f32,
+            (160 + pos[1].0 * 200) as f32,
+            10.0,
+            GREEN,
+        );
+    }
+}
+
 fn minmax(board: &mut Grid, depth: i32, maxing: bool) -> i32 {
     match board.is_win() {
         Mark::CROSS => return -100 + depth,
@@ -237,7 +285,7 @@ fn generate_tablebase() -> Tablebase {
             }
             grid_set.insert(ns.clone());
 
-            // find best move for AI after player played cross.
+            // Find best move for AI after player played cross.
             let mut max_score = i32::MIN;
             let mut best_grids: Vec<Grid> = Vec::new();
             let mut best_pos: Vec<(usize, usize)> = Vec::new();
@@ -316,6 +364,8 @@ async fn main() {
     let mut ai_wins: usize = 0;
     let mut ties: usize = 0;
     let mut ended: bool = false;
+    let mut winner: Mark = Mark::EMPTY;
+    let mut win_pos: Vec<(usize, usize)> = Vec::new();
 
     loop {
         if is_key_pressed(KeyCode::Escape) {
@@ -324,9 +374,11 @@ async fn main() {
         } else if ended && is_key_pressed(KeyCode::Backspace) {
             board.reset_grid();
             ended = false;
+            win_pos = Vec::new();
+            winner = Mark::EMPTY;
         } else if is_key_pressed(KeyCode::Enter) {
             println!(
-                "Player has won {} times. Ai has won {} time. {} games have been tied.",
+                "Player has won {} and Ai has won {} times. {} games have been tied.",
                 player_wins, ai_wins, ties
             );
         } else if is_mouse_button_pressed(MouseButton::Left) && !ended {
@@ -349,6 +401,8 @@ async fn main() {
                     println!("Player won!");
                     player_wins += 1;
                     ended = true;
+                    win_pos = board.get_win_pos(Mark::CROSS);
+                    winner = Mark::CROSS;
                 } else if board.is_full() {
                     println!("Ended in tie!");
                     ties += 1;
@@ -360,6 +414,8 @@ async fn main() {
                         println!("AI won!");
                         ai_wins += 1;
                         ended = true;
+                        win_pos = board.get_win_pos(Mark::NOUGHT);
+                        winner = Mark::NOUGHT;
                     }
                 }
             }
@@ -374,6 +430,9 @@ async fn main() {
                     Mark::EMPTY => {}
                 }
             }
+        }
+        if ended && winner != Mark::EMPTY {
+            draw_win(&win_pos, &winner);
         }
         next_frame().await
     }
